@@ -281,6 +281,9 @@ sampling_parallel <- function(args_shared, args_per_fit,
                               c("R_session_init_expr"),
                             envir = environment())
     parallel::clusterEvalQ(cl, expr = R_session_init_expr)
+    parallel::clusterExport(cl, varlist =
+                            c("summarise_fun"),
+                            envir = environment())
 
     results <- do.call(parallel::parLapplyLB,
                        args = c(list(cl = cl,

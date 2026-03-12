@@ -4,7 +4,10 @@ output: html_notebook
 ---
 
 ```{r setup}
-library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
 library(brms)
 library(ggdist)
 library(cmdstanr)
@@ -22,7 +25,7 @@ source(here::here("R", "sampling_parallel.R"))
 source(here::here("R", "brm_parallel.R"))
 
 
-theme_set(cowplot::theme_cowplot())
+theme_set(theme_minimal())
 proact <- read_csv(here::here("private_data/alsfrs_proact.csv"))
 ```
 
@@ -38,7 +41,7 @@ proact_full <- proact %>%
                                          Q5b_Cutting_with_Gastrostomy, Q5a_Cutting_without_Gastrostomy)) %>%
     select(-Q5b_Cutting_with_Gastrostomy, -Q5a_Cutting_without_Gastrostomy, 
            -Q10_Respiratory, -ALSFRS_Total, -Mode_of_Administration, -ALSFRS_Responded_By) %>%
-    filter(across(c(starts_with("Q"), starts_with("R")), function(x) { !is.na(x) } )) 
+    filter(if_all(c(starts_with("Q"), starts_with("R")), function(x) { !is.na(x) } )) 
 
 
 question_col_names_proact <- sort(names(proact_full)[grepl("^[QR]", names(proact_full))])
@@ -95,14 +98,16 @@ sim1 %>% ggplot(aes(x = alsfrs_dly_mnths, y = alsfrs_total - alsfrs_start, group
 ```{r}
 
 # Setting for simulations done early
-questions_to_fit <- question_col_names[1:4]
-n_subjects_per_group <- 100
-eff_probs <- 0.7
+# questions_to_fit <- question_col_names[1:4]
+# n_subjects_per_group <- 100
+# eff_probs <- 0.7
+# keep_fits <- TRUE
 
 
 # questions_to_fit <- question_col_names
-# n_subjects_per_group <- 200
-# eff_probs <- rep(c(0.5,0.55,0.6,0.65,0.7), times = 5)
+n_subjects_per_group <- 200
+eff_probs <- rep(c(0.5,0.55,0.6,0.65,0.7), times = 5)
+keep_fits <- FALSE
 
 sv <- make_stanvars_mv_probit_bgoodri(questions_to_fit)
 
@@ -167,17 +172,19 @@ for(i in 1:length(eff_probs)) {
   args_per_fit[[i]] <- list(data = data_for_fit)
 }
 
-# fits_mv_probit <- brm_parallel(args_shared = list(formula = bf(proact_formula, family = empty_cumulative()) + set_rescor(FALSE), stanvars = sv, adapt_delta = 0.95, init = 0.1), args_per_fit = args_per_fit, cache_dir = cache_dir, cache_fits = TRUE)
-
-
+if(keep_fits) {
+fits_mv_probit <- brm_parallel(args_shared = list(formula = bf(proact_formula, family = empty_cumulative()) + set_rescor(FALSE), stanvars = sv, adapt_delta = 0.95, init = 0.1), args_per_fit = args_per_fit, cache_dir = cache_dir, cache_fits = TRUE)
+} else {
 summaries_mv_probit <- brm_parallel(args_shared = list(formula = bf(proact_formula, family = empty_cumulative()) + set_rescor(FALSE), stanvars = sv, adapt_delta = 0.95, init = 0.1), args_per_fit = args_per_fit, cache_dir = cache_dir, cache_fits = TRUE, summarise_fun = effect_from_sim_study)
-
+}
 ```
 ```{r}
+if(keep_fits) {
 for(i in 1:length(eff_probs)) {
   cat("===== EFF Prob ", eff_probs[i], "====== \n")
   print(fits_mv_probit[[i]])
   #Next step: make predictions for the total score
+}
 }
 
 
@@ -186,12 +193,16 @@ for(i in 1:length(eff_probs)) {
 
 ```{r}
 
-
-# all_effects_mv_probit <- purrr::map_df(1:length(eff_probs), 
-#                              ~ data.frame(id = .x, type = "mv_probit", eff_prob = eff_probs[.x], estimate = effect_from_sim_study(fits_mv_probit[[.x]])))
-
-all_effects_mv_probit <- purrr::map_df(1:length(eff_probs), 
+if(keep_fits) {
+  all_effects_mv_probit <- purrr::map_df(1:length(eff_probs),
+                               ~ data.frame(id = .x, type = "mv_probit", eff_prob = eff_probs[.x], estimate = effect_from_sim_study(fits_mv_probit[[.x]])))
+    
+} else {
+  all_effects_mv_probit <- purrr::map_df(1:length(eff_probs), 
                              ~ data.frame(id = .x, type = "mv_probit", eff_prob = eff_probs[.x], estimate = summaries_mv_probit[[.x]]))
+    
+}
+
 
 ```
 
@@ -217,12 +228,13 @@ args_per_fit[[1]]$data$subject_id %>% unique() %>% length()
 ```
 
 ```{r}
-data_s0 <- make_standata(bf(proact_formula, family = cumulative()) + set_rescor(FALSE),
-              data = args_per_fit[[1]]$data)
-
-model_s0 <- cmdstan_model("../stan/indep_logit_sum0.stan")
-
-fit_s0 <- model_s0$sample(data = data_s0, init = 0.1)
+## Sum to zero test
+# data_s0 <- make_standata(bf(proact_formula, family = cumulative()) + set_rescor(FALSE),
+#               data = args_per_fit[[1]]$data)
+# 
+# model_s0 <- cmdstan_model("../stan/indep_logit_sum0.stan")
+# 
+# fit_s0 <- model_s0$sample(data = data_s0, init = 0.1)
 
 ```
 

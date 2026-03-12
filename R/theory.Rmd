@@ -4,9 +4,11 @@ output: html_notebook
 ---
 
 ```{r}
-library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
 library(patchwork)
-theme_set(cowplot::theme_cowplot())
+theme_set(theme_minimal())
 ```
 
 ```{r}
@@ -49,7 +51,7 @@ all_thresholds <- purrr::map_dfr(all_func_data, function(x) x$thresholds) %>%  l
 
 time_scale <- scale_x_continuous("Time", breaks = c())
 facet <- facet_wrap(~label, nrow = 1)
-p_progression <- ggplot(aes(x = time, y = f), data = all_true) + geom_line(size = 2, color = "orangered") +
+p_progression <- ggplot(aes(x = time, y = f), data = all_true) + geom_line(linewidth = 2, color = "orangered") +
     geom_hline(aes(yintercept = threshold), data = all_thresholds, color = "darkgray") + time_scale +
     scale_y_continuous("Biological function", breaks = c(0,1), labels = c("Death", "No damage")) + facet
 

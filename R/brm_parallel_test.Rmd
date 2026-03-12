@@ -6,7 +6,7 @@ output: html_notebook
 Next step: copy testing code from stanmodeldev
 
 ```{r setup}
-library(tidyverse)
+library(dplyr)
 library(parallel)
 library(brms)
 library(cmdstanr)
@@ -28,7 +28,7 @@ source(here::here("R", "brm_parallel.R"))
 ```{r}
   simple_model_code = "
     data {
-      real x[5];
+      vector[5] x;
     }
     parameters {
       real mu;
@@ -44,7 +44,7 @@ simple_model = cmdstan_model(write_stan_file(simple_model_code))
 #  second_simple_model = stan_model(model_code = (
 "
     data {
-      real x[7];
+      vector[7] x;
     }
     parameters {
       real<lower=0> sigma;
