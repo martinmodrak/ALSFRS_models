@@ -9,5 +9,4 @@ setup_cluster <- function(max_local_workers = Inf, max_server_workers = 140, for
     # future::plan(future.mirai::mirai_cluster)
   }
   future::plan(future::multisession, workers = n_workers)
-  options(SBC.generator_chunk_size = 500)
 }

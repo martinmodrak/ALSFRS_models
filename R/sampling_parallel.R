@@ -192,9 +192,15 @@ sampling_parallel <- function(args_shared, args_per_fit,
               if(!is.null(all_args$control$max_treedepth)) {
                 translated_args$max_depth = all_args$control$max_treedepth
               }
+            } else if(old == "warmup") {
+              translated_args$iter_warmup = all_args$warmup
             } else if(old == "iter") {
-              translated_args$iter_warmup = all_args$iter / 2
-              translated_args$iter_sampling = all_args$iter/ 2
+                if("warmup" %in% names(all_args)) {
+                    translated_args$iter_sampling = all_args$iter - all_args$warmup
+                } else {
+                    translated_args$iter_warmup = all_args$iter / 2
+                    translated_args$iter_sampling = all_args$iter/ 2
+                }
             } else {
               translated_args[[old]] = all_args[[old]]
             }
