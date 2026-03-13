@@ -133,17 +133,18 @@ proact_formula <- as.formula(paste0(
 set.seed(468652233)
 
 sims <- list()
-for(i in 1:min(length(eff_probs), 15)) {
+for(i in 1:length(eff_probs)) {
   sims[[i]] <- simulate_data_from_registry(proact_standardized,
                                     max_duration = 12,
                                     min_measurements_per_subject = 4,
                                     max_measurements_per_subject = 8,
                                     n_subjects_per_group = n_subjects_per_group,
                                     effect_prob = eff_probs[i])
+  if(i <= 15) {
   print(sims[[i]] %>% ggplot(aes(x = alsfrs_dly_mnths, y = alsfrs_total - alsfrs_start, group = subject_id,
                                 color = group)) +
     geom_line(position = position_jitter(height = 0.3), alpha = 0.5) + ggtitle(paste0("Eff prob: ", eff_probs[i]))) 
-
+  }
 }
 
 ```
