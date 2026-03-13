@@ -104,16 +104,16 @@ sim1 %>% ggplot(aes(x = alsfrs_dly_mnths, y = alsfrs_total - alsfrs_start, group
 
 ```{r}
 # Test scenario
-questions_to_fit <- question_col_names
-n_subjects_per_group <- 50
-eff_probs <- rep(c(0.5, 0.7, 0.8), times = 20)
-keep_fits <- TRUE
-
-# Final scenario
 # questions_to_fit <- question_col_names
 # n_subjects_per_group <- 50
-# eff_probs <- rep(c(0.5, 0.7), times = 5)
+# eff_probs <- rep(c(0.5, 0.7, 0.8), times = 20)
 # keep_fits <- TRUE
+
+# Final scenario
+questions_to_fit <- question_col_names
+n_subjects_per_group <- 50
+eff_probs <- rep(c(0.5, 0.7, 0.8), times = 100)
+keep_fits <- TRUE
 
 
 sv <- make_stanvars_mv_probit_bgoodri(questions_to_fit)
