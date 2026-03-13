@@ -1,6 +1,5 @@
 brm_parallel <- function(args_shared, args_per_fit,
                          summarise_fun = NULL,
-                         summarise_fun_dependencies = c(),
                          backend = options("brms.backend"),
                          ...) {
 
@@ -69,6 +68,5 @@ brm_parallel <- function(args_shared, args_per_fit,
     sampling_parallel(args_shared = list(), args_per_fit = processed_args_per_fit,
                    convert_cmdstan_fits_to_rstan = TRUE,
                    summarise_fun = brms_summarise_fun,
-                   summarise_fun_dependencies = c("brms", summarise_fun_dependencies),
                    ...)
 }

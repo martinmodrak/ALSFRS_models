@@ -1,6 +1,6 @@
 #' @param summarise_fun a function to process each fit. This function is run in parallel.
 #'   Note that this function must be runnable in new RStudio sessions. You may
-#'   use the `R_session_init` or `summarise_fun_dependencies` parameters to ensure it is loaded.
+#'   use the  `summarise_fun_dependencies` parameter to ensure libraries are loaded (but you should ideally just be explicit and use `::`).
 #' @param summarise_fun_dependencies a list of package names that need to be loaded for
 #'   `summarise_fun` to run. IMPORTANT: when developing packages, you need to install
 #'   the latest version, `devtools::load_all()` won't be enough
@@ -9,16 +9,15 @@
 #' @return A list of length `length(data)` containing the result of applying
 #'   `summarise_fun` to each fit.
 sampling_parallel <- function(args_shared, args_per_fit,
-                            total_cores = getOption("mc.cores", 1),
                             cores_per_fit = NULL,
                             convert_cmdstan_fits_to_rstan = FALSE,
                             fits_in_parallel = NULL,
                             summarise_fun = NULL,
-                            summarise_fun_dependencies = c(),
                             cache_fits = FALSE,
                             cache_summaries = FALSE,
                             cache_dir = NULL,
-                            R_session_init_expr = NULL) {
+                            future.chunk.size = 1
+                            ) {
 
   if(!is.list(args_shared)) {
     stop("args_shared must be a list")
@@ -39,10 +38,7 @@ sampling_parallel <- function(args_shared, args_per_fit,
     stop("cache_summaries can only be used if summarise_fun is not null")
   }
 
-  total_cores <- as.integer(total_cores)
-  if(length(total_cores) > 1 || total_cores < 1 || is.na(total_cores)) {
-    stop("Cores must be a single integer greater than 0")
-  }
+  total_cores <- future::nbrOfWorkers()
 
   n_fits <- length(args_per_fit)
 
@@ -233,66 +229,22 @@ sampling_parallel <- function(args_shared, args_per_fit,
     result
   }
 
-  dependencies <- c()
-  if(uses_rstan) {
-    dependencies <- c(dependencies, "rstan", "Rcpp")
-  }
-  if(uses_cmdstan) {
-    dependencies <- c(dependencies, "cmdstanr")
-  }
-  dependencies <- c(dependencies, summarise_fun_dependencies)
+  lapply_args <- list()
 
-  lapply_args <- list(args_shared = args_shared,
-                      summarise_fun = summarise_fun,
-                      convert_cmdstan_fits_to_rstan = convert_cmdstan_fits_to_rstan,
-                      cores_per_fit = cores_per_fit,
-                      cache_dir = cache_dir,
-                      cmdstan_fit_dir = tempdir(),
-                      cache_fits = cache_fits,
-                      cache_summaries = cache_summaries)
-
-  if(fits_in_parallel == 1) {
-    for(dep in dependencies) {
-      suppressPackageStartupMessages(require(dep, quietly = TRUE, character.only = TRUE))
-    }
-    eval(R_session_init_expr, envir = environment())
-    results <- do.call(lapply, args = c(
-      list(X = args_per_fit, FUN = fit_fun),
-      lapply_args))
-  } else {
-     cl <- parallel::makeCluster(fits_in_parallel, useXDR = FALSE)
-     on.exit(parallel::stopCluster(cl))
-
-    .paths <- unique(c(.libPaths(), sapply(dependencies, FUN = function(d) {
-      dirname(system.file(package = d))
-    })))
-    .paths <- .paths[.paths != ""]
-    parallel::clusterExport(cl, varlist = c(".paths","dependencies"), envir = environment())
-    parallel::clusterEvalQ(cl, expr = .libPaths(.paths))
-    parallel::clusterEvalQ(cl, expr =
-                             for(dep in dependencies) {
-                               suppressPackageStartupMessages(require(dep, quietly = TRUE, character.only = TRUE))
-                             }
-    )
-
-    #    parallel::clusterExport(cl, varlist = "args_shared", envir = environment())
-
-    parallel::clusterExport(cl, varlist =
-                              c("R_session_init_expr"),
-                            envir = environment())
-    parallel::clusterEvalQ(cl, expr = R_session_init_expr)
-    parallel::clusterExport(cl, varlist =
-                            c("summarise_fun"),
-                            envir = environment())
-
-    results <- do.call(parallel::parLapplyLB,
-                       args = c(list(cl = cl,
-                                     X = args_per_fit,
-                                     fun = fit_fun,
-                                     chunk.size = 1),
-                                lapply_args))
-
-  }
+  results <- future.apply::future_lapply(
+      X = args_per_fit,
+      FUN = fit_fun,
+      args_shared = args_shared,
+      summarise_fun = summarise_fun,
+      convert_cmdstan_fits_to_rstan = convert_cmdstan_fits_to_rstan,
+      cores_per_fit = cores_per_fit,
+      cache_dir = cache_dir,
+      cmdstan_fit_dir = tempdir(),
+      cache_fits = cache_fits,
+      cache_summaries = cache_summaries,
+      future.seed = TRUE,
+      future.chunk.size = future.chunk.size
+  )
 
   results
 }
