@@ -185,12 +185,19 @@ for(i in 1:length(eff_probs)) {
 ## Logit fits
 
 ```{r}
-fits_logit <- brm_parallel(args_shared = list(formula = bf(proact_formula, family = cumulative()) + set_rescor(FALSE), adapt_delta = 0.95, init = 0.1, chains = 2, iter = 3000, warmup = 1000), args_per_fit = args_per_fit, cache_dir = cache_dir, cache_fits = TRUE)
+if(keep_fits) {
+  fits_logit <- brm_parallel(args_shared = list(formula = bf(proact_formula, family = cumulative()) + set_rescor(FALSE), adapt_delta = 0.95, init = 0.1, chains = 2, iter = 3000, warmup = 1000), args_per_fit = args_per_fit, cache_dir = cache_dir, cache_fits = TRUE)
 
-all_effects_logit <- purrr::map_df(1:length(eff_probs), 
+  all_effects_logit <- purrr::map_df(1:length(eff_probs), 
                              ~ data.frame(id = .x, type = "logit", eff_prob = eff_probs[.x], estimate = effect_from_sim_study(fits_logit[[.x]])))
 
-
+} else {
+    summaries_logit <- brm_parallel(args_shared = list(formula = bf(proact_formula, family = cumulative()) + set_rescor(FALSE), adapt_delta = 0.95, init = 0.1, chains = 2, iter = 3000, warmup = 1000), args_per_fit = args_per_fit, cache_dir = cache_dir, cache_fits = TRUE, summarise_fun = effect_from_sim_study,
+                                    future.globals = list("effect_from_sim_study" = effect_from_sim_study))
+    
+    all_effects_logit <- purrr::map_df(1:length(eff_probs), 
+                             ~ data.frame(id = .x, type = "logit", eff_prob = eff_probs[.x], estimate = summaries_logit[[.x]]))
+}
 ```
 
 ```{r}

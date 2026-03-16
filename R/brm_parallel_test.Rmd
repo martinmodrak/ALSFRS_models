@@ -20,7 +20,7 @@ if(!dir.exists(cache_dir)) {
 source(here::here("R", "sampling_parallel.R"))
 source(here::here("R", "brm_parallel.R"))
 
-
+future::plan(future::multisession)
 ```
 
 

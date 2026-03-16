@@ -16,7 +16,8 @@ sampling_parallel <- function(args_shared, args_per_fit,
                             cache_fits = FALSE,
                             cache_summaries = FALSE,
                             cache_dir = NULL,
-                            future.chunk.size = 1
+                            future.chunk.size = 1,
+                            future.globals = NULL
                             ) {
 
   if(!is.list(args_shared)) {
@@ -114,7 +115,8 @@ sampling_parallel <- function(args_shared, args_per_fit,
                       convert_cmdstan_fits_to_rstan,
                       cores_per_fit,
                       cache_dir, cache_fits, cache_summaries,
-                      cmdstan_fit_dir) {
+                      cmdstan_fit_dir,
+                      progressor) {
     all_args <- c(args_shared, args)
     all_args$cores <- cores_per_fit
 
@@ -193,8 +195,14 @@ sampling_parallel <- function(args_shared, args_per_fit,
                 translated_args$max_depth = all_args$control$max_treedepth
               }
             } else if(old == "iter") {
-              translated_args$iter_warmup = all_args$iter / 2
-              translated_args$iter_sampling = all_args$iter/ 2
+              if("warmup" %in% names(all_args)) {
+                  translated_args$iter_sampling = all_args$iter - all_args$warmup
+              } else {
+                  translated_args$iter_warmup = all_args$iter / 2
+                  translated_args$iter_sampling = all_args$iter/ 2
+              }
+            } else if(old == "warmup") {
+                translated_args$iter_warmup = all_args$warmup
             } else {
               translated_args[[old]] = all_args[[old]]
             }
@@ -225,11 +233,17 @@ sampling_parallel <- function(args_shared, args_per_fit,
 
     } # End - if(!summary_cached)
 
-
+    if(!is.null(progressor)) {
+        progressor()
+    }
     result
   }
 
-  lapply_args <- list()
+  if(requireNamespace("progressr", quietly = TRUE)) {
+      progressor <- progressr::progressor(n_fits)
+  } else {
+      progressor <- NULL
+  }
 
   results <- future.apply::future_lapply(
       X = args_per_fit,
@@ -243,7 +257,9 @@ sampling_parallel <- function(args_shared, args_per_fit,
       cache_fits = cache_fits,
       cache_summaries = cache_summaries,
       future.seed = TRUE,
-      future.chunk.size = future.chunk.size
+      future.chunk.size = future.chunk.size,
+      future.globals = future.globals,
+      progressor = progressor
   )
 
   results

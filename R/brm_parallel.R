@@ -13,7 +13,11 @@ brm_parallel <- function(args_shared, args_per_fit,
     processed_args_per_fit <- list()
     model_codes <- array(NA_character_, n_fits)
 
-
+    if(requireNamespace("progressr", quietly = TRUE)) {
+        progressor_prep <- progressr::progressor(n_fits, label = "Preparing datasets", message = "Preparing datasets")
+    } else {
+        progressor_prep <- NULL
+    }
     for(i in 1:n_fits) {
         for(a in brms_argnames) {
             if(a %in% names(args_shared) && a %in% names(args_per_fit)) {
@@ -52,12 +56,15 @@ brm_parallel <- function(args_shared, args_per_fit,
         stan_args$summarise_fun_args <- c(list(emptyfit = emptyfit), stan_args$summarise_fun_args)
 
         processed_args_per_fit[[i]] <- stan_args
+        if(!is.null(progressor_prep)) {
+            progressor_prep()
+        }
     }
 
     brms_summarise_fun <- function(fit, emptyfit, ...) {
         brmsfit <- emptyfit
         brmsfit$fit <- fit
-        brmsfit <- rename_pars(brmsfit)
+        brmsfit <- brms::rename_pars(brmsfit)
         if(is.null(summarise_fun)) {
             brmsfit
         } else {
