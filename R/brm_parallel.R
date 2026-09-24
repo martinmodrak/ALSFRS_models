@@ -1,6 +1,12 @@
+#' @param backend "rstan", "cmdstanr" or "nutpier". The nutpieR backend compiles
+#'   the brms-generated Stan code with BridgeStan, samples with nuts-rs and
+#'   converts the draws to a `stanfit` in memory, so everything downstream
+#'   (rename_pars, posterior_epred, get_divergent_iterations) is unchanged.
+#'   Sampler-specific options go in `nutpie_args`, e.g.
+#'   `nutpie_args = list(adaptation = "low_rank")`.
 brm_parallel <- function(args_shared, args_per_fit,
                          summarise_fun = NULL,
-                         backend = options("brms.backend"),
+                         backend = getOption("brms.backend", "rstan"),
                          ...) {
 
 
@@ -46,6 +52,11 @@ brm_parallel <- function(args_shared, args_per_fit,
                 stan_args$model <- rstan::stan_model(model_code = stancode)
             } else if(backend == "cmdstanr"){
                 stan_args$model <- cmdstanr::cmdstan_model(cmdstanr::write_stan_file(stancode))
+            } else if(backend == "nutpier"){
+                # nutpieR keeps its own content-hashed cache of compiled shared
+                # libraries, so identical stancode is a near-instant cache hit
+                stan_args$model <- nutpieR::nutpie_compile_model(
+                    code = as.character(stancode), verbose = 0)
             } else {
                 stop("Unrecognized backend")
             }
@@ -72,8 +83,18 @@ brm_parallel <- function(args_shared, args_per_fit,
         }
     }
 
+    # the fit does not depend on how it is summarised, but a cached SUMMARY
+    # does: keying summaries on the source of summarise_fun means editing it
+    # invalidates the summaries without discarding the fits underneath
+    summarise_fun_src <- if(is.null(summarise_fun)) {
+        NULL
+    } else {
+        paste(deparse(body(summarise_fun)), collapse = "\n")
+    }
+
     sampling_parallel(args_shared = list(), args_per_fit = processed_args_per_fit,
                    convert_cmdstan_fits_to_rstan = TRUE,
                    summarise_fun = brms_summarise_fun,
+                   extra_cache_key = summarise_fun_src,
                    ...)
 }
