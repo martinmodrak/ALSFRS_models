@@ -54,7 +54,7 @@ proact_standardized <- data_prep(proact)
 
 nsims = 100
 n_subj_per_group <- 50
-eff_probs <- rep(c(0.5, 0.8), times = nsims) 
+eff_probs <- rep(0.5, times = nsims) 
 question_col_names <- sprintf("Q%02d", 1:12)
 questions_to_fit <- question_col_names
 ```
@@ -73,6 +73,11 @@ for(i in 1:length(eff_probs)) {
                                              n_subjects_per_group = n_subj_per_group,
                                              effect_prob = eff_probs[i])
 }
+sims_cs <-  purrr::map(sims, ~ dplyr::filter(.x, is_first == TRUE)) #cross-sectional sims, first only 
+
+sims_2pt <- purrr::map(sims, ~ dplyr::filter(.x, is_first | is_last)) #two-visit sims, first and last 
+stopifnot(all(purrr::map_int(sims_2pt, nrow) == 4 * n_subj_per_group))
+
 ```
 
 ## LMMS

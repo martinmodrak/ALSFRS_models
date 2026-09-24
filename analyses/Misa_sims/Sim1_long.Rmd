@@ -1,0 +1,299 @@
+---
+title: "Sim1 — hierarchical item-level model"
+date: "2026-08-28"
+output: html_document
+---
+
+Companion to `Sim1.Rmd`: fits the hierarchical long-format ordinal model specified in `methods/claude_ordinal_model_proposal.md` on the same simulations.
+
+The model, in the notation of the proposal:
+
+$$P(Y_{itj} \ge k) = \mathrm{logit}^{-1}(\eta_{itj} - \kappa_{j,k}), \qquad
+\eta_{itj} = a_i + a_{ij} + \omega_{it} + (\beta_j + b_i + b_{ij} + \gamma\, g_i)\, s_{it}$$
+
+Correspondence to the brms formula below: `(1 + time | subject_id)` gives $(a_i, b_i)$, `(1 + time | subject_id:item)` gives $(a_{ij}, b_{ij})$, `(1 | subject_id:visit_id)` gives $\omega_{it}$, `0 + item:time` gives $\beta_j$, `time_treat` gives $\gamma$, and `thres(4, gr = item)` gives the item-specific thresholds $\kappa_{j,k}$.
+
+The chunks from "Long-format data" onward only need `sims`, `args_sh`, `cache_dir`, `questions_to_fit` in scope, so they can be pasted directly into `Sim1.Rmd` to run on the identical replicates. Run standalone, this file regenerates `sims` with the same seed.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(brms)
+library(ggdist)
+library(cmdstanr)
+library(patchwork)
+
+options(mc.cores = parallel::detectCores(), brms.backend = "cmdstanr")
+cache_dir <- here::here("local_temp_data", "simulation_test")
+if(!dir.exists(cache_dir)) {
+  dir.create(cache_dir, recursive = TRUE)
+}
+
+source(here::here("R", "data_prep.R"))
+source(here::here("R", "simulate_data.R"))
+source(here::here("R", "effect_functions.R"))
+source(here::here("R", "sampling_parallel.R"))
+source(here::here("R", "brm_parallel.R"))
+source(here::here("R", "cluster.R"))
+
+setup_cluster(max_server_workers = 100)
+```
+
+```{r}
+#LOAD DATA
+proact <- read_csv(here::here("private_data/F_PROACT_ALSFRS.csv"))
+proact_standardized <- data_prep(proact)
+```
+
+## Simulate data
+
+```{r}
+# SIMULATION SCENARIO (identical to Sim1.Rmd)
+nsims = 1
+n_subj_per_group <- 50
+eff_probs <- rep(0.5, times = nsims)
+question_col_names <- sprintf("Q%02d", 1:12)
+questions_to_fit <- question_col_names
+
+args_sh = list(adapt_delta = 0.95,
+               init = 0.1,
+               chains = 3,
+               iter = 3000,
+               warmup = 1000)
+```
+
+```{r}
+# SIMULATE DATA
+set.seed(468652233)
+
+sims <- list()
+for(i in 1:length(eff_probs)) {
+    sims[[i]] <- simulate_data_from_registry(proact_standardized,
+                                             max_duration = 12,
+                                             min_measurements_per_subject = 4,
+                                             max_measurements_per_subject = 8,
+                                             n_subjects_per_group = n_subj_per_group,
+                                             effect_prob = eff_probs[i])
+}
+```
+
+## Long-format data
+
+One row per subject x visit x item. `score` is shifted to 1..5 (brms requirement), `item` is a factor (defines the threshold groups), and the treatment-by-time column is precomputed so that its coefficient has a stable name (`time_treat`) for priors and summaries.
+
+```{r}
+prepare_long_data <- function(sim_data, questions = questions_to_fit) {
+    sim_data %>%
+        select(subject_id, visit_id, group, alsfrs_dly_mnths, all_of(questions)) %>%
+        pivot_longer(all_of(questions), names_to = "item", values_to = "score") %>%
+        mutate(score = score + 1,
+               item = factor(item, levels = questions),
+               treat = as.integer(group == "Treatment"),
+               time = alsfrs_dly_mnths,
+               time_treat = time * treat)
+}
+
+args_per_fit_long <- purrr::map(sims, ~ list(data = prepare_long_data(.x)))
+```
+
+## Hierarchical model
+
+In brms ordinal formulas the intercept is implicit and *is* the thresholds, so no item main effects are included, the grouped thresholds absorb them. `item:time` (interaction only, no `time` main effect) gives each item its own population rate; there is a single pooled treatment effect on the latent rate.
+
+```{r}
+hier_formula <- bf(
+    score | thres(4, gr = item) ~
+        item:time + time_treat + #the same as time*treat 
+        (1 + time | subject_id) +
+        (1 + time | subject_id:item) +
+        (1 | subject_id:visit_id),
+    family = cumulative("logit")
+)
+
+hier_priors <- c(
+    prior(normal(0, 10), class = "Intercept"),
+    prior(normal(0, 1), class = "b"),
+    prior(normal(0, 0.3), class = "b", coef = "time_treat"),
+    prior(student_t(3, 0, 2.5), class = "sd"),
+    prior(normal(0, 1), class = "sd", coef = "time", group = "subject_id"),
+    prior(normal(0, 1), class = "sd", coef = "time", group = "subject_id:item"),
+    prior(normal(0, 1), class = "sd", group = "subject_id:visit_id"),
+    prior(lkj(2), class = "cor")
+)
+```
+
+```{r}
+# Treatment - Control difference in the change of the expected ALSFRS-R total
+# between month 0 and s_star, computed two ways from the long-format fit:
+#   effect_samples          - all random effects set to zero (re_formula = NA);
+#                             the same conditional estimand as effect_from_sim_study,
+#                             kept for continuity with the existing pipeline.
+#   effect_samples_marginal - random effects integrated out by predicting for n_new
+#                             fresh subjects per posterior draw (sample_new_levels =
+#                             "gaussian"); this is the population-averaged quantity
+#                             that matches the plasmode ground truth and the LMM
+#                             estimand, at the cost of a little Monte Carlo noise.
+# Runs inside worker sessions, hence the explicit :: prefixes and base R only.
+effect_hier_from_sim_study <- function(fit, s_star = 12,
+                                       n_new = 100, ndraws_marginal = 1000) {
+    items <- levels(fit$data$item)
+
+    expected_total <- function(pred, keys, denom = 1) {
+        cats <- as.integer(dimnames(pred)[[3]])
+        esc <- 0
+        for (k in seq_along(cats)) {
+            esc <- esc + pred[, , k] * cats[k]
+        }
+        out <- sapply(unique(keys), function(kk) {
+            rowSums(esc[, keys == kk, drop = FALSE]) / denom
+        })
+        out
+    }
+    did <- function(tot, s_star) {
+        (tot[, paste0(s_star, "_1")] - tot[, "0_1"]) -
+            (tot[, paste0(s_star, "_0")] - tot[, "0_0"])
+    }
+
+    ## conditional (median-patient) version
+    nd_cond <- expand.grid(item = factor(items, levels = items),
+                           time = c(0, s_star), treat = c(0, 1),
+                           KEEP.OUT.ATTRS = FALSE)
+    nd_cond$time_treat <- nd_cond$time * nd_cond$treat
+    pe <- brms::posterior_epred(fit, newdata = nd_cond, re_formula = NA)
+    eff_cond <- did(expected_total(pe, paste(nd_cond$time, nd_cond$treat, sep = "_")),
+                    s_star)
+
+    ## marginal (population-averaged) version
+    nd_marg <- expand.grid(subject_id = paste0("new_", seq_len(n_new)),
+                           item = factor(items, levels = items),
+                           time = c(0, s_star), treat = c(0, 1),
+                           KEEP.OUT.ATTRS = FALSE)
+    nd_marg$time_treat <- nd_marg$time * nd_marg$treat
+    nd_marg$visit_id <- paste(nd_marg$subject_id, nd_marg$time, sep = "_")
+    pm <- brms::posterior_epred(fit, newdata = nd_marg, re_formula = NULL,
+                                allow_new_levels = TRUE,
+                                sample_new_levels = "gaussian",
+                                ndraws = ndraws_marginal)
+    eff_marg <- did(expected_total(pm, paste(nd_marg$time, nd_marg$treat, sep = "_"),
+                                   denom = n_new),
+                    s_star)
+
+    n_divergent <- sum(rstan::get_divergent_iterations(fit$fit))
+    ss <- posterior::summarise_draws(posterior::as_draws(fit))
+
+    list(
+        effect_samples = eff_cond,
+        effect_samples_marginal = eff_marg,
+        gamma_samples = as.vector(posterior::extract_variable(
+            posterior::as_draws(fit), "b_time_treat")),
+        diags = data.frame(n_divergent,
+                           max_rhat     = max(ss$rhat,     na.rm = TRUE),
+                           min_ess_bulk = min(ss$ess_bulk, na.rm = TRUE),
+                           min_ess_tail = min(ss$ess_tail, na.rm = TRUE))
+    )
+}
+```
+
+```{r}
+summary_hier <- brm_parallel(
+    args_shared = c(list(formula = hier_formula, prior = hier_priors), args_sh),
+    args_per_fit = args_per_fit_long,
+    cache_dir = cache_dir,
+    cache_fits = FALSE,
+    cache_summaries = TRUE,
+    summarise_fun = effect_hier_from_sim_study,
+    future.globals = list("effect_hier_from_sim_study" = effect_hier_from_sim_study))
+
+effects_hier <- purrr::map_df(1:length(eff_probs),
+    ~ data.frame(id = .x, type = "hier", eff_prob = eff_probs[.x],
+                 estimate = summary_hier[[.x]]$effect_samples))
+
+effects_hier_marg <- purrr::map_df(1:length(eff_probs),
+    ~ data.frame(id = .x, type = "hier_marginal", eff_prob = eff_probs[.x],
+                 estimate = summary_hier[[.x]]$effect_samples_marginal))
+```
+
+## Secondary model: item-specific treatment effects
+
+The pooled `time_treat` is the primary analysis. The secondary variant lets the effect vary by item, hierarchically shrunk toward the pooled value: `(0 + time_treat | item)` is exactly $\gamma_j = \gamma + u_j$, $u_j \sim N(0, \tau_\gamma^2)$.
+
+```{r}
+hier_formula_itemfx <- bf(
+    score | thres(4, gr = item) ~
+        item:time + time_treat +
+        (0 + time_treat | item) +
+        (1 + time | subject_id) +
+        (1 + time | subject_id:item) +
+        (1 | subject_id:visit_id),
+    family = cumulative("logit")
+)
+
+hier_priors_itemfx <- c(
+    hier_priors,
+    prior(normal(0, 0.15), class = "sd", group = "item")
+)
+
+summary_hier_itemfx <- brm_parallel(
+    args_shared = c(list(formula = hier_formula_itemfx, prior = hier_priors_itemfx), args_sh),
+    args_per_fit = args_per_fit_long,
+    cache_dir = cache_dir,
+    cache_fits = FALSE,
+    cache_summaries = TRUE,
+    summarise_fun = effect_hier_from_sim_study,
+    future.globals = list("effect_hier_from_sim_study" = effect_hier_from_sim_study))
+
+effects_hier_itemfx <- purrr::map_df(1:length(eff_probs),
+    ~ data.frame(id = .x, type = "hier_itemfx", eff_prob = eff_probs[.x],
+                 estimate = summary_hier_itemfx[[.x]]$effect_samples))
+```
+
+## Calibration summary
+
+At `eff_prob = 0.5` the strong null holds exactly (the within-pair assignment is a fair coin), so rejection rates here are type I error and interval coverage of 0 is directly interpretable.
+
+```{r}
+summarise_effects <- function(effects_df) {
+    effects_df %>%
+        group_by(type, eff_prob, id) %>%
+        summarise(mean_est = mean(estimate),
+                  lower95 = quantile(estimate, 0.025),
+                  upper95 = quantile(estimate, 0.975),
+                  reject = lower95 > 0 | upper95 < 0,
+                  .groups = "drop") %>%
+        group_by(type, eff_prob) %>%
+        summarise(n_fits = n(),
+                  mean_estimate = mean(mean_est),
+                  sd_estimate = sd(mean_est),
+                  type_I_or_power = mean(reject),
+                  mc_se_rejection = sqrt(type_I_or_power * (1 - type_I_or_power) / n_fits),
+                  .groups = "drop")
+}
+
+bind_rows(effects_hier, effects_hier_marg, effects_hier_itemfx) %>%
+    summarise_effects()
+
+collect_diags_all(list(hier = summary_hier, hier_itemfx = summary_hier_itemfx)) %>%
+    summarise_diags()
+```
+
+```{r}
+# Conditional vs marginal estimand, per replicate: the conditional (median-patient)
+# version is systematically larger in magnitude because it evaluates the expected-score
+# curve at its steepest point; the marginal version is the one comparable to the LMM
+# and to the plasmode ground truth.
+inner_join(
+    effects_hier %>% group_by(id) %>% summarise(conditional = mean(estimate)),
+    effects_hier_marg %>% group_by(id) %>% summarise(marginal = mean(estimate)),
+    by = "id") %>%
+    ggplot(aes(conditional, marginal)) +
+    geom_point() +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+    theme_minimal()
+```
+
+## 
